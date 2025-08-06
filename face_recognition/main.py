@@ -287,7 +287,7 @@ def visualize_results(img, boxes, scores, title="Detection Results"):
 # 6. Main: Load → Train → Test
 # -----------------------------------
 if __name__ == "__main__":
-    base_dir = r"D:\HTTT\AI\face_recognition"
+    base_dir = r"E:\Project\HTTT\ai-lab\face_recognition"
     pos_mat = os.path.join(base_dir, "possamples.mat")
     neg_mat = os.path.join(base_dir, "negsamples.mat")
     

@@ -31,9 +31,10 @@ HOG_PARAMS = {
 }
 
 # Absolute face size limits
-ABS_MIN_FACE = 15   # Absolute minimum face size
+ABS_MIN_FACE = 20   # Tăng kích thước tối thiểu
 ABS_MAX_FACE = 300  # Absolute maximum face size
-CONF_THRESH_LOW = 0.1  # Lower bound for confidence threshold
+CONF_THRESH_LOW = 0.25  # Tăng ngưỡng cơ bản
+MIN_FACE_AREA = 25*25  # Tăng diện tích tối thiểu
 
 # -----------------------------------
 # 1. Load .mat and extract HOG features
@@ -79,7 +80,7 @@ def load_hog_dataset(pos_path, neg_path):
 # -----------------------------------
 # 2. Soft-Non Maximum Suppression
 # -----------------------------------
-def soft_nms(boxes, scores, iou_thr=0.2, sigma=0.6, thresh=0.001):
+def soft_nms(boxes, scores, iou_thr=0.3, sigma=0.5, thresh=0.001):
     if len(boxes) == 0:
         return [], []
     
@@ -128,35 +129,39 @@ def detect_faces(img, model, scaler, window_size):
     min_dim = min(img_h, img_w)
     max_dim = max(img_h, img_w)
     
-    # Adaptive face size limits - CẢI TIẾN QUAN TRỌNG
+    # Tự động xác định loại ảnh (ít người hay đông người)
+    is_crowd_image = max_dim > 200 and min_dim > 200  # Ảnh lớn thường là đông người
+    
+    # Adaptive face size limits
     if max_dim < 250:  # Small images
-        min_face_size = max(ABS_MIN_FACE, int(min_dim * 0.15))  # 15% of smaller dimension
-        max_face_size = min(ABS_MAX_FACE, int(max_dim * 0.7))   # 70% of larger dimension
-        scales = [0.8, 1.0, 1.2]  # Giữ nguyên scale cho ảnh nhỏ
-        step_size = 8
-        nms_thr = 0.3  # Tăng ngưỡng NMS để giảm false positives
-        conf_thr_factor = 1.3  # Tăng ngưỡng confidence
-        sigma = 0.5
-    elif max_dim > 1000:  # Large images with many faces
-        min_face_size = max(ABS_MIN_FACE, int(min_dim * 0.03))  # 3% of smaller dimension
-        max_face_size = min(ABS_MAX_FACE, int(max_dim * 0.3))  # 30% of larger dimension
-        scales = [0.25, 0.4, 0.6, 0.8, 1.0, 1.2]  # Tối ưu hóa scale
+        min_face_size = max(ABS_MIN_FACE, int(min_dim * 0.15))
+        max_face_size = min(ABS_MAX_FACE, int(max_dim * 0.7))
+        scales = [0.95, 1.0, 1.05]  # Reduced scales for small images
+        step_size = 10
+        nms_thr = 1.4
+        conf_thr_factor = 2.5
+        sigma = 0.2
+    elif is_crowd_image:  # Large images with many faces
+        min_face_size = max(ABS_MIN_FACE, int(min_dim * 0.03))
+        max_face_size = min(ABS_MAX_FACE, int(max_dim * 0.2))  # Giảm kích thước tối đa
+        scales = [0.1, 0.2, 0.4, 0.6, 1.0, 1.2, 1.4]  # Scale tập trung hơn
         step_size = 6
-        nms_thr = 0.5  # Giảm ngưỡng NMS để giữ nhiều detection
-        conf_thr_factor = 0.8  # Giảm ngưỡng confidence
-        sigma = 0.7
-    else:  # Medium images
-        min_face_size = max(ABS_MIN_FACE, int(min_dim * 0.05))  # 5% of smaller dimension
-        max_face_size = min(ABS_MAX_FACE, int(max_dim * 0.4))   # 40% of larger dimension
-        scales = [0.4, 0.6, 0.8, 1.0, 1.2]  # Tối ưu hóa scale
+        nms_thr = 0.3  # Giảm ngưỡng NMS cho ảnh đông người
+        conf_thr_factor = 0.7  # Giảm hệ số ngưỡng confidence
+        sigma = 0.4
+    else:  # Medium images (1-5 người)
+        min_face_size = max(ABS_MIN_FACE, int(min_dim * 0.05))
+        max_face_size = min(ABS_MAX_FACE, int(max_dim * 0.4))
+        scales = [0.6, 0.8, 1.0, 1.2]  # Scale tập trung hơn
         step_size = 8
-        nms_thr = 0.4
-        conf_thr_factor = 1.0
-        sigma = 0.6
+        nms_thr = 0.7
+        conf_thr_factor = 1.2  # Tăng hệ số ngưỡng confidence
+        sigma = 0.4
     
     print(f"Adaptive params: min_face={min_face_size}px, max_face={max_face_size}px, scales={len(scales)}, step={step_size}, sigma={sigma:.2f}, nms_thr={nms_thr:.2f}, conf_thr_factor={conf_thr_factor:.2f}")
     
     # Resize large images for faster processing
+    scale_factor = 1.0
     if max_dim > 1600:
         scale_factor = 1600 / max_dim
         img = cv2.resize(img, (0, 0), fx=scale_factor, fy=scale_factor)
@@ -196,26 +201,27 @@ def detect_faces(img, model, scaler, window_size):
                     ow = int(ww / scale)
                     oh = int(wh / scale)
                     
-                    if original_shape != img.shape:
-                        resize_factor = max(img_h, img_w) / 1600
-                        ox = int(ox * resize_factor)
-                        oy = int(oy * resize_factor)
-                        ow = int(ow * resize_factor)
-                        oh = int(oh * resize_factor)
+                    # Điều chỉnh tọa độ nếu ảnh đã resize
+                    if scale_factor < 1.0:
+                        ox = int(ox / scale_factor)
+                        oy = int(oy / scale_factor)
+                        ow = int(ow / scale_factor)
+                        oh = int(oh / scale_factor)
                     
                     # Use adaptive face size limits
                     if (min_face_size <= ow <= max_face_size and
-                        0.6 <= ow/oh <= 1.5):
+                        0.6 <= ow/oh <= 1.5 and
+                        ow*oh >= MIN_FACE_AREA):
                         all_boxes.append([ox, oy, ow, oh])
                         all_scores.append(score)
 
     if not all_boxes:
         return np.empty((0, 4)), np.array([]), decision_scores
 
-    # Dynamic threshold calculation - CẢI TIẾN QUAN TRỌNG
+    # Dynamic threshold calculation
     adaptive_threshold = calculate_adaptive_threshold(all_scores, decision_scores)
-    adaptive_threshold *= conf_thr_factor  # Apply size-based adjustment
-    adaptive_threshold = max(CONF_THRESH_LOW, min(adaptive_threshold, 0.8))
+    adaptive_threshold *= conf_thr_factor
+    adaptive_threshold = max(CONF_THRESH_LOW, min(adaptive_threshold, 0.85))
     print(f"Adaptive confidence threshold: {adaptive_threshold:.4f}")
 
     # Apply adaptive threshold
@@ -229,11 +235,11 @@ def detect_faces(img, model, scaler, window_size):
     if not filtered_boxes:
         return np.empty((0, 4)), np.array([]), decision_scores
 
-    # Áp dụng Soft-NMS với tham số sigma phù hợp
+    # Apply Soft-NMS
     boxes, scores = soft_nms(filtered_boxes, filtered_scores, iou_thr=nms_thr, sigma=sigma)
     
-    # Phân cụm detection - CẢI TIẾN QUAN TRỌNG
-    boxes, scores = cluster_detections(boxes, scores, original_shape, img)
+    # Cluster detections
+    boxes, scores = cluster_detections(boxes, scores, original_shape, img, is_crowd_image)
 
     return boxes, scores, decision_scores
 
@@ -268,28 +274,31 @@ def calculate_adaptive_threshold(positive_scores, all_scores):
     except:
         valley_thresh = mean_score - 0.5 * std_score
     
-    # 3. Percentile-based threshold - CẢI TIẾN
-    percentile_thresh = np.percentile(positive_scores, 30)  # Tăng lên 30th percentile
+    # 3. Percentile-based threshold
+    percentile_thresh = np.percentile(positive_scores, 50)  # Increased from 30
     
     # 4. Combine methods
     adaptive_threshold = max(
         CONF_THRESH_LOW,
-        min(mean_score - 0.2 * std_score, valley_thresh, percentile_thresh)  # Giảm hệ số std
+        min(mean_score - 0.3 * std_score, valley_thresh, percentile_thresh)
     )
     
     # Ensure threshold is reasonable
-    adaptive_threshold = max(CONF_THRESH_LOW, min(adaptive_threshold, 0.8))
+    adaptive_threshold = max(CONF_THRESH_LOW, min(adaptive_threshold, 0.85))
     
     return adaptive_threshold
 
-def cluster_detections(boxes, scores, img_shape, img):
+def cluster_detections(boxes, scores, img_shape, img, is_crowd_image=False):
     if len(boxes) == 0:
         return np.empty((0, 4)), np.array([])
     
     centers = np.array([[x + w/2, y + h/2] for x, y, w, h in boxes])
     
-    # Adaptive epsilon based on image size - CẢI TIẾN
-    eps = min(img_shape[:2]) / 20  # Tăng epsilon để gom nhóm rộng hơn
+    # Adaptive epsilon based on image size
+    if is_crowd_image:
+        eps = min(img_shape[:2]) / 20  # Tăng epsilon cho ảnh đông người
+    else:
+        eps = min(img_shape[:2]) / 12  # Giảm epsilon cho ảnh ít người
     
     db = DBSCAN(eps=eps, min_samples=1).fit(centers)
     labels = db.labels_
@@ -305,27 +314,47 @@ def cluster_detections(boxes, scores, img_shape, img):
         if not detections:
             continue
             
-        # Confidence-based weighting
-        weights = np.array([score for _, score in detections])
-        weights /= weights.sum()
-        avg_box = np.average([box for box, _ in detections], axis=0, weights=weights)
-        avg_score = np.mean([score for _, score in detections])
+        # Filter by size consistency
+        cluster_sizes = [box[2]*box[3] for box, _ in detections]
+        median_size = np.median(cluster_sizes)
         
-        # Kiểm tra tính hợp lệ của khuôn mặt trước khi thêm
-        if validate_face(img, avg_box, avg_score, skip_eye_check=True):
+        # Keep only detections within size range
+        filtered = [
+            (box, score) for box, score in detections 
+            if 0.5 * median_size <= box[2]*box[3] <= 2.0 * median_size
+        ]
+        
+        if not filtered:
+            continue
+            
+        # Confidence-based weighting
+        weights = np.array([score for _, score in filtered])
+        weights /= weights.sum()
+        avg_box = np.average([box for box, _ in filtered], axis=0, weights=weights)
+        avg_score = np.mean([score for _, score in filtered])
+        
+        # Validate face
+        if validate_face(img, avg_box, avg_score, skip_eye_check=is_crowd_image):
             final_boxes.append(avg_box)
             final_scores.append(avg_score)
     
     return np.array(final_boxes), np.array(final_scores)
 
 # -----------------------------------
-# 4. Validate Face Features with Adaptive Confidence - CẢI TIẾN
+# 4. Enhanced Face Validation
 # -----------------------------------
 def validate_face(img, box, score, skip_eye_check=False):
     x, y, w, h = map(int, box)
+    
+    # Đảm bảo box nằm trong ảnh
+    h_img, w_img = img.shape[:2]
+    x = max(0, min(x, w_img - 1))
+    y = max(0, min(y, h_img - 1))
+    w = max(1, min(w, w_img - x))
+    h = max(1, min(h, h_img - y))
+    
     face_roi = img[y:y+h, x:x+w]
-
-    if face_roi.size == 0:
+    if face_roi.size == 0 or w <= 5 or h <= 5:
         return False
 
     # Skip validation for high-confidence detections
@@ -334,51 +363,57 @@ def validate_face(img, box, score, skip_eye_check=False):
 
     gray_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
     
-    # Adjust validation strictness based on confidence score
-    if score > 0.5:
-        min_contrast = 10  # Giảm ngưỡng contrast
-        min_aspect = 0.5
-        max_aspect = 1.5
-    else:
-        min_contrast = 12  # Giảm ngưỡng contrast
-        min_aspect = 0.5   # Mở rộng ngưỡng aspect ratio
-        max_aspect = 1.5
-
-    # Kiểm tra kích thước tối thiểu
-    if w < 20 or h < 20:  # Giảm kích thước tối thiểu
+    # Minimum size check
+    if w < 25 or h < 25:  # Tăng kích thước tối thiểu
         return False
 
-    # Kiểm tra contrast và aspect ratio
+    # Contrast check
     contrast = np.std(gray_face)
-    aspect_ratio = w / h
-    if contrast < min_contrast or aspect_ratio < min_aspect or aspect_ratio > max_aspect:
+    if contrast < 15:  # Tăng ngưỡng tương phản
         return False
 
-    # Bỏ qua kiểm tra mắt nếu được yêu cầu hoặc khuôn mặt quá nhỏ
-    if skip_eye_check or w < 40 or h < 40:
+    # Aspect ratio check
+    aspect_ratio = w / h
+    if aspect_ratio < 0.6 or aspect_ratio > 1.5:  # Mở rộng ngưỡng tỷ lệ
+        return False
+
+    # Skin color detection
+    hsv = cv2.cvtColor(face_roi, cv2.COLOR_BGR2HSV)
+    skin_pixels = cv2.inRange(hsv, (0, 30, 60), (25, 150, 255))
+    skin_ratio = np.sum(skin_pixels > 0) / (w * h)
+    if skin_ratio < 0.25:  # Giảm ngưỡng cho ảnh đông người
+        return False
+        
+    # Skip eye check for crowd images or small faces
+    if skip_eye_check or w < 50 or h < 50:
         return True
 
-    # Kiểm tra mắt nếu có thể
+    # Eye detection
     eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-    if not eye_cascade.empty():
-        eyes = eye_cascade.detectMultiScale(
-            gray_face,
-            scaleFactor=1.05,
-            minNeighbors=2,
-            minSize=(int(w * 0.08), int(h * 0.08)),
-            flags=cv2.CASCADE_SCALE_IMAGE
-        )
+    if eye_cascade.empty():
+        return True  # Skip if cascade not available
+    
+    eyes = eye_cascade.detectMultiScale(
+        gray_face,
+        scaleFactor=1.05,
+        minNeighbors=3,  # Tăng minNeighbors
+        minSize=(int(w * 0.1), int(h * 0.1)),  # Tăng kích thước mắt tối thiểu
+        flags=cv2.CASCADE_SCALE_IMAGE
+    )
 
-        for (ex, ey, ew, eh) in eyes:
-            if ey + eh/2 < h * 0.7:
-                return True
-
-    return True  # Chấp nhận nếu không tìm thấy mắt nhưng các điều kiện khác đạt
+    valid_eyes = 0
+    for (ex, ey, ew, eh) in eyes:
+        # Kiểm tra vị trí mắt (nên nằm ở nửa trên khuôn mặt)
+        if ey < h * 0.6 and (ex > w*0.1 and ex+ew < w*0.9):
+            valid_eyes += 1
+    
+    # Yêu cầu ít nhất 1 mắt hợp lệ
+    return valid_eyes >= 1
 
 # -----------------------------------
-# 5. Display Results (Simplified)
+# 5. Display Results (Improved)
 # -----------------------------------
-def visualize_results(img, boxes, scores):
+def visualize_results(img, boxes, scores, title="Detection Results"):
     img_display = img.copy()
     if len(img_display.shape) == 2:
         img_display = cv2.cvtColor(img_display, cv2.COLOR_GRAY2BGR)
@@ -391,17 +426,19 @@ def visualize_results(img, boxes, scores):
         score = scores[i]
         
         # Color based on confidence
-        green = min(255, int(255 * score))
-        red = min(255, int(255 * (1 - score)))
-        color = (0, green, red)
+        color_intensity = min(255, int(255 * score / max(1, np.max(scores) * 1.5)))
+        color = (0, color_intensity, 255 - color_intensity)
         
         cv2.rectangle(img_display, (x, y), (x+w, y+h), color, 2)
+        cv2.putText(img_display, f"{score:.2f}", (x, y-5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     
     # Convert to RGB for display
     img_rgb = cv2.cvtColor(img_display, cv2.COLOR_BGR2RGB)
     
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(10, 8))
     plt.imshow(img_rgb)
+    plt.title(f"{title} - {len(boxes)} faces")
     plt.axis('off')
     plt.show()
     
@@ -411,7 +448,7 @@ def visualize_results(img, boxes, scores):
 # 6. Main: Load → Train → Test
 # -----------------------------------
 if __name__ == "__main__":
-    base_dir = r"D:\HTTT\AI\ai-lab\face_recognition"
+    base_dir = r"E:\Project\HTTT\ai-lab\face_recognition"
     pos_mat = os.path.join(base_dir, "possamples.mat")
     neg_mat = os.path.join(base_dir, "negsamples.mat")
     
@@ -434,7 +471,7 @@ if __name__ == "__main__":
     
     print("4) Recognizing faces on test images …")
     test_images = []
-    for i in range(1, 11):  # Test on more images
+    for i in range(1, 3):  # Test on more images
         path = os.path.join(base_dir, f"img{i}.jpg")
         if os.path.exists(path):
             test_images.append(path)
@@ -476,5 +513,6 @@ if __name__ == "__main__":
         print(f"   Processing time: {process_time:.2f}s")
         print(f"   Faces detected: {len(valid_boxes)}")
         
-        # Display results - only image with boxes
+        # Display results
         visualize_results(img, valid_boxes, valid_scores)
+        
